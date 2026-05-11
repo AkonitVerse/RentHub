@@ -39,10 +39,10 @@ import { buildLoggerConfig } from './common/logger/logger.config';
     }),
     LoggerModule.forRoot(buildLoggerConfig()),
     ScheduleModule.forRoot(),
-    // В dev лимиты в 10× выше — иначе hot-reload и React strict-mode (двойные
+    // В dev и test лимиты в 10× выше — иначе hot-reload и React strict-mode (двойные
     // запросы) бьют по throttler-у и блокируют разработку. В prod остаются строгие.
     ThrottlerModule.forRoot(
-      process.env.NODE_ENV === 'development'
+      process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test'
         ? [
             { name: 'default', ttl: 60_000, limit: 1200 },
             { name: 'auth', ttl: 60_000, limit: 100 },

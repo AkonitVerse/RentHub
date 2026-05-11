@@ -108,14 +108,7 @@ test.describe('Health', () => {
 });
 
 test.describe('Admin panel (authenticated)', () => {
-  test.beforeEach(async ({ page }) => {
-    // Sign in
-    await page.goto('/login');
-    await page.getByLabel('Email').fill(ADMIN_EMAIL);
-    await page.getByLabel('Пароль').fill(ADMIN_PASSWORD);
-    await page.getByRole('button', { name: /Войти/i }).click();
-    await expect(page).toHaveURL(/\/admin/, { timeout: 10_000 });
-  });
+  // Authentication is handled by auth.setup.ts and storageState
 
   test('dashboard shows KPI cards', async ({ page }) => {
     await page.goto('/admin/overview');
@@ -207,8 +200,8 @@ test.describe('API endpoints', () => {
     const res = await request.get(`${base}/equipment?page=1&limit=10`);
     expect(res.ok()).toBeTruthy();
     const body = await res.json();
-    expect(body).toHaveProperty('data');
-    expect(Array.isArray(body.data)).toBeTruthy();
+    expect(body).toHaveProperty('items');
+    expect(Array.isArray(body.items)).toBeTruthy();
   });
 
   test('public categories tree is accessible', async ({ request }) => {

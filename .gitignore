@@ -107,6 +107,7 @@ coverage/
 playwright-report/
 test-results/
 .playwright/
+playwright/.auth/
 e2e-results/
 __snapshots__/
 
