@@ -102,6 +102,7 @@ jobs:
           WEB_URL: http://localhost:4173
           E2E_API_PORT: '3001'
           E2E_WEB_PORT: '4173'
+          E2E_TESTING: '1'
       - uses: actions/upload-artifact@v4
         if: failure()
         with:

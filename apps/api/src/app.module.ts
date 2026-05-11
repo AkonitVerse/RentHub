@@ -41,8 +41,11 @@ import { buildLoggerConfig } from './common/logger/logger.config';
     ScheduleModule.forRoot(),
     // В dev и test лимиты в 10× выше — иначе hot-reload и React strict-mode (двойные
     // запросы) бьют по throttler-у и блокируют разработку. В prod остаются строгие.
+    // E2E тесты тоже используют высокие лимиты (определяется через E2E_TESTING=1).
     ThrottlerModule.forRoot(
-      process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test'
+      process.env.NODE_ENV === 'development' || 
+      process.env.NODE_ENV === 'test' ||
+      process.env.E2E_TESTING === '1'
         ? [
             { name: 'default', ttl: 60_000, limit: 1200 },
             { name: 'auth', ttl: 60_000, limit: 100 },

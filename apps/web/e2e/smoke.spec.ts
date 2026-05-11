@@ -15,9 +15,13 @@ test.describe('Public', () => {
     await expect(page).toHaveURL(/\/catalog$/);
   });
 
-  test('protected admin route redirects unauthenticated user to /login', async ({ page }) => {
+  test('protected admin route redirects unauthenticated user to /login', async ({ browser }) => {
+    // Create fresh context without storageState to test redirect
+    const context = await browser.newContext({ storageState: undefined });
+    const page = await context.newPage();
     await page.goto('/admin');
     await expect(page).toHaveURL(/\/login/);
+    await context.close();
   });
 
   test('404 page renders for unknown route', async ({ page }) => {
@@ -211,13 +215,21 @@ test.describe('API endpoints', () => {
     expect(Array.isArray(body)).toBeTruthy();
   });
 
-  test('protected endpoints require authentication', async ({ request }) => {
+  test('protected endpoints require authentication', async ({ browser }) => {
+    // Create fresh context without storageState to test unauthenticated access
+    const context = await browser.newContext({ storageState: undefined });
+    const request = context.request;
     const res = await request.get(`${base}/orders`);
     expect(res.status()).toBe(401);
+    await context.close();
   });
 
-  test('protected analytics require admin role', async ({ request }) => {
+  test('protected analytics require admin role', async ({ browser }) => {
+    // Create fresh context without storageState to test unauthenticated access
+    const context = await browser.newContext({ storageState: undefined });
+    const request = context.request;
     const res = await request.get(`${base}/analytics/dashboard`);
     expect(res.status()).toBe(401);
+    await context.close();
   });
 });
