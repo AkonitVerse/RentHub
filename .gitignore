@@ -1,0 +1,199 @@
+# ============================================
+# Dependencies
+# ============================================
+node_modules/
+.pnp
+.pnp.js
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+.yarn/install-state.gz
+
+# ============================================
+# Build outputs
+# ============================================
+dist/
+build/
+out/
+.next/
+.nuxt/
+.cache/
+.parcel-cache/
+.turbo/
+
+# ============================================
+# Environment variables
+# ============================================
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.*.local
+*.env
+
+# ============================================
+# Logs
+# ============================================
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+.pnpm-debug.log*
+
+# ============================================
+# Operating System
+# ============================================
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ============================================
+# IDEs and Editors
+# ============================================
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains (WebStorm, IntelliJ IDEA, etc.)
+.idea/
+*.iml
+*.ipr
+*.iws
+.idea_modules/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*.swn
+*~
+.*.sw[a-p]
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# ============================================
+# Testing
+# ============================================
+coverage/
+*.lcov
+.nyc_output/
+playwright-report/
+test-results/
+.playwright/
+e2e-results/
+__snapshots__/
+
+# ============================================
+# Database
+# ============================================
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+apps/api/data.sqlite
+apps/api/data.sqlite-journal
+
+# ============================================
+# Uploads and User Content
+# ============================================
+apps/api/uploads/*
+!apps/api/uploads/.gitkeep
+uploads/
+public/uploads/
+
+# ============================================
+# Docker
+# ============================================
+docker/volumes/
+.dockerignore
+
+# ============================================
+# Temporary files
+# ============================================
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.backup
+*.cache
+
+# ============================================
+# Package manager locks (optional)
+# ============================================
+# Uncomment if you want to ignore lock files
+# package-lock.json
+# yarn.lock
+# pnpm-lock.yaml
+
+# ============================================
+# Generated files
+# ============================================
+apps/api/node_modules/.prisma/
+.prisma/
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# TypeScript compiled output in non-src folders
+apps/api/prisma/*.js
+apps/api/prisma/*.d.ts
+apps/api/prisma/*.js.map
+apps/api/*.js
+apps/api/*.d.ts
+apps/api/*.js.map
+!apps/api/*.config.js
+!apps/api/*.config.mjs
+
+# ============================================
+# Secrets and sensitive data
+# ============================================
+*.pem
+*.key
+*.cert
+*.crt
+*.p12
+*.pfx
+secrets/
+.secrets/
+credentials.json
+service-account.json
+
+# ============================================
+# Miscellaneous
+# ============================================
+.eslintcache
+.stylelintcache
+*.pid
+*.seed
+*.pid.lock
+.npm/
+.node_repl_history
+.yarn-integrity

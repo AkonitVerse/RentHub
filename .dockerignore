@@ -1,0 +1,16 @@
+# Used by docker compose builds (context: project root)
+node_modules
+**/node_modules
+**/dist
+**/build
+**/coverage
+**/playwright-report
+**/test-results
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+**/.DS_Store
+.git
+.github
+docs

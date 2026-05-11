@@ -1,0 +1,687 @@
+// Prisma schema для RentHub
+// Документация: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL") // Prisma 5 syntax (valid until upgrade to v7)
+}
+
+// =====================
+// Перечисления
+// =====================
+
+enum UserRole {
+  ADMIN
+  MANAGER
+  USER
+}
+
+/// OPERATIONAL — единица в строю и может быть зарезервирована
+/// BROKEN — на ремонте/обслуживании, в резерв не берём
+/// RETIRED — списана, не используется
+enum WarehouseItemStatus {
+  OPERATIONAL
+  BROKEN
+  RETIRED
+}
+
+/// DRAFT — черновик: либо инквайри с витрины, либо незаконченный заказ менеджера
+/// PENDING — оформлен, ждёт подтверждения менеджером
+/// CONFIRMED — менеджер подтвердил, склад зарезервирован
+/// ACTIVE — оборудование выдано клиенту
+/// OVERDUE — просрочен возврат
+/// DONE — все позиции возвращены
+/// CANCELLED — отменён
+enum OrderStatus {
+  DRAFT
+  PENDING
+  CONFIRMED
+  ACTIVE
+  OVERDUE
+  DONE
+  CANCELLED
+}
+
+/// MANUAL — менеджер создал в админке
+/// WEB_CART — checkout с витрины через корзину (всё выбрано клиентом)
+/// WEB_INQUIRY — лёгкая заявка с витрины (форма «связаться»)
+enum OrderSource {
+  MANUAL
+  WEB_CART
+  WEB_INQUIRY
+}
+
+enum DeliveryMethod {
+  PICKUP
+  DELIVERY
+}
+
+/// PLANNED — резерв создан под подтверждённый заказ, единица «забронирована»
+/// ACTIVE — единица фактически выдана клиенту
+/// RETURNED — возвращена в срок или после
+/// CANCELLED — резерв снят (заказ отменён)
+enum ReservationStatus {
+  PLANNED
+  ACTIVE
+  RETURNED
+  CANCELLED
+}
+
+/// Тип клиента: физическое лицо или юридическое лицо (ООО, АО, ИП и т.д.)
+enum ClientType {
+  INDIVIDUAL
+  COMPANY
+}
+
+// =====================
+// Пользователи и аутентификация
+// =====================
+
+model User {
+  id               Int              @id @default(autoincrement())
+  email            String           @unique
+  /// Телефон пользователя (опц.). У клиентов всегда задан при регистрации,
+  /// у админа/менеджера может отсутствовать. Уникален при наличии.
+  phone            String?          @unique
+  passwordHash     String
+  role             UserRole         @default(USER)
+  /// Имя пользователя.
+  firstName        String
+  /// Фамилия.
+  lastName         String
+  /// Полное имя (denormalized): firstName + ' ' + lastName.
+  /// Хранится для упрощения поиска и отображения. Обновляется автоматически.
+  name             String
+  refreshTokenHash String?
+  /// В таблице users — только юзеры с подтверждённым email. Незаконченные
+  /// регистрации (юзер ввёл данные, но не подтвердил код) хранятся в
+  /// `pending_registrations` и не создают User до момента верификации.
+  client           Client?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  statusChanges    OrderStatusLog[]
+  extensions       RentalExtension[]
+  resetCodes       PasswordResetCode[]
+  payments         Payment[]
+
+  /// Индекс по role — везде в админке списки фильтруются по роли (USER vs ADMIN/MANAGER).
+  /// Без индекса каждый запрос делает full scan по таблице users.
+  @@index([role])
+  @@map("users")
+}
+
+/// Одноразовый 6-значный код для сброса пароля. Хэшируется bcrypt.
+/// expiresAt = createdAt + 15 минут. После use=true повторно не работает.
+model PasswordResetCode {
+  id        Int      @id @default(autoincrement())
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  codeHash  String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  /// Сколько раз ввели НЕВЕРНЫЙ код. После 5 попыток код помечается used,
+  /// чтобы заблокировать дальнейший подбор. Юзеру придётся заново запрашивать
+  /// новый код через /forgot-password.
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("password_reset_codes")
+}
+
+/// Незаконченная регистрация — данные введены, но email не подтверждён кодом.
+///
+/// Принципиально: пока юзер не подтвердил код, он НЕ создаётся в таблице users.
+/// Все регданные (email, phone, hash пароля, ФИО) хранятся здесь до момента
+/// верификации. Это даёт:
+///   1. Чистую таблицу users (только реальные подтверждённые юзеры).
+///   2. Освобождение email/phone через 15 мин если юзер не подтвердил —
+///      другой человек сможет зарегаться с этим email/phone (или сам юзер
+///      попробовать заново).
+///   3. Защиту от мусорных аккаунтов с неверными email.
+///
+/// При verify-email: атомарно (transaction) создаём User из этих данных,
+/// удаляем pending-запись, выдаём JWT.
+///
+/// При resend-verification: обновляем codeHash и attempts.
+/// При повторной регистрации с тем же email: upsert (заменяем старый pending).
+///
+/// Защита от brute-force: после 5 неверных попыток pending удаляется,
+/// юзер должен зарегаться заново.
+model PendingRegistration {
+  id           Int      @id @default(autoincrement())
+  /// Email и phone уникальны — пока pending активен, никто не может занять
+  /// эти контакты ни в users, ни в новой pending-записи.
+  email        String   @unique
+  phone        String   @unique
+  passwordHash String
+  firstName    String
+  lastName     String
+  /// bcrypt-hash 6-значного кода. Сам код приходит на email и в БД не хранится.
+  codeHash     String
+  /// expiresAt = createdAt + 15 минут. После — pending очищается через cron
+  /// или ленивым удалением при попытке verify/resend.
+  expiresAt    DateTime
+  /// Счётчик неверных попыток ввода кода. После 5 — pending удаляется.
+  attempts     Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  @@index([expiresAt])
+  @@map("pending_registrations")
+}
+
+// =====================
+// Категории (3-уровневая иерархия)
+// =====================
+
+model Category {
+  id           Int         @id @default(autoincrement())
+  slug         String      @unique
+  name         String
+  description  String?
+  icon         String?
+  sortOrder    Int         @default(0)
+  parentId     Int?
+  parent       Category?   @relation("CategoryTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children     Category[]  @relation("CategoryTree")
+  catalogItems Equipment[]
+
+  @@unique([parentId, name])
+  @@index([parentId])
+  @@map("categories")
+}
+
+// =====================
+// Каталог (карточки товаров)
+// =====================
+
+model Equipment {
+  id             Int                @id @default(autoincrement())
+  sku            String             @unique
+  name           String
+  /// Категория обязательна — единственный источник правды о категории оборудования.
+  /// Единицы инвентаря (WarehouseItem) наследуют категорию через привязку к карточке.
+  categoryId     Int
+  category       Category           @relation(fields: [categoryId], references: [id])
+  description    String
+  fullDesc       String?
+  deposit        Int                @default(0)
+  isActive       Boolean            @default(true)
+  isFeatured     Boolean            @default(false)
+  rating         Float              @default(0)
+  reviewCount    Int                @default(0)
+  photos         Json?              // string[] — массив путей
+  specs          Json?              // {[key: string]: string}
+  prices         CatalogItemPrice[]
+  warehouseItems WarehouseItem[]
+  orderLines     OrderLine[]
+  inquiryOrders  Order[]            @relation("InquiryEquipment")
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  @@index([categoryId])
+  @@index([isActive])
+  @@index([isFeatured])
+  @@map("equipment")
+}
+
+// =====================
+// Глобальные ценовые тиры (1..5)
+// =====================
+
+model PricingTier {
+  id      Int                @id @default(autoincrement())
+  rank    Int                @unique
+  minDays Int
+  maxDays Int? // null у последнего тира
+  note    String?
+  prices  CatalogItemPrice[]
+
+  @@map("pricing_tiers")
+}
+
+model CatalogItemPrice {
+  id            Int         @id @default(autoincrement())
+  catalogItemId Int
+  tierId        Int
+  pricePerDay   Int
+  /// true, если цена была переопределена вручную и игнорирует массовый пересчёт тира
+  isOverridden  Boolean     @default(false)
+  catalogItem   Equipment   @relation(fields: [catalogItemId], references: [id], onDelete: Cascade)
+  tier          PricingTier @relation(fields: [tierId], references: [id], onDelete: Cascade)
+
+  @@unique([catalogItemId, tierId])
+  @@index([catalogItemId])
+  @@index([tierId])
+  @@map("catalog_item_prices")
+}
+
+// =====================
+// Склад (физические единицы оборудования)
+// =====================
+
+model WarehouseItem {
+  id              Int                 @id @default(autoincrement())
+  name            String
+  inventoryNumber String              @unique
+  serialNumber    String?
+  /// Физическое состояние единицы. «Занятость» — отдельно через Reservation.
+  /// «В аренде» / «Зарезервировано» — производные статусы, не хранятся.
+  status          WarehouseItemStatus @default(OPERATIONAL)
+  /// Привязка к каталожной карточке (опц.). Категория единицы наследуется от карточки.
+  /// Если catalogItemId = null — единица «в общем пуле», без категории.
+  catalogItemId   Int?
+  catalogItem     Equipment?          @relation(fields: [catalogItemId], references: [id])
+  /// Дата покупки (для расчёта окупаемости и старения парка).
+  purchaseDate    DateTime?
+  /// Закупочная цена в рублях (для аналитики окупаемости).
+  purchasePrice   Int?
+  /// Гарантия действует до этой даты (опц., чтобы не нести на платный ремонт).
+  warrantyUntil   DateTime?
+  /// Свободная заметка о состоянии: «царапина на корпусе», «без кейса», и т.п.
+  notes           String?
+  orderLines      OrderLine[]
+  reservations    Reservation[]
+  maintenanceLog  MaintenanceLog[]
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([status])
+  @@index([catalogItemId])
+  @@map("warehouse_items")
+}
+
+// =====================
+// Клиенты (контрагенты)
+// =====================
+
+model Client {
+  id         Int        @id @default(autoincrement())
+  /// Тип клиента: физлицо или юрлицо/ИП.
+  clientType ClientType @default(INDIVIDUAL)
+  /// Для физлиц — «Имя Фамилия». Для юрлиц — название организации.
+  name       String
+  phone      String     @unique
+  email      String?    @unique
+  /// Опциональная связь с аккаунтом пользователя. Один клиент = максимум один аккаунт.
+  userId     Int?       @unique
+  user       User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  // === Реквизиты юридического лица (заполняются только при clientType = COMPANY) ===
+  /// ИНН: 10 цифр для юрлиц, 12 цифр для ИП.
+  inn             String?
+  /// КПП: 9 цифр. Только для юрлиц (не ИП).
+  kpp             String?
+  /// ОГРН (13 цифр) или ОГРНИП (15 цифр).
+  ogrn            String?
+  /// Юридический адрес.
+  legalAddress    String?
+  /// ФИО контактного лица.
+  contactPerson   String?
+  /// Должность контактного лица.
+  contactPosition String?
+  /// Телефон контактного лица.
+  contactPhone    String?
+
+  // === Банковские реквизиты (опционально) ===
+  /// Расчётный счёт (20 цифр).
+  bankAccount String?
+  /// БИК банка (9 цифр).
+  bankBik     String?
+  /// Наименование банка.
+  bankName    String?
+
+  orders    Order[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([name])
+  @@index([clientType])
+  @@index([inn])
+  @@map("clients")
+}
+
+// =====================
+// Заказы и аренды
+// =====================
+
+model Order {
+  id             Int              @id @default(autoincrement())
+  number         String           @unique
+  clientId       Int
+  /// Restrict — нельзя удалить клиента, у которого есть заказы. Сначала надо
+  /// либо архивировать клиента, либо переписать заказы на другого. Это защищает
+  /// аналитику и историю от потери данных.
+  client         Client           @relation(fields: [clientId], references: [id], onDelete: Restrict)
+  status         OrderStatus      @default(DRAFT)
+  source         OrderSource      @default(MANUAL)
+  /// Свободный текст из формы «связаться» (для WEB_INQUIRY).
+  inquiryNote    String?
+  /// Оборудование, к которому относится инквайри (если форма пришла с карточки товара).
+  inquiryEquipmentId Int?
+  inquiryEquipment   Equipment?   @relation("InquiryEquipment", fields: [inquiryEquipmentId], references: [id], onDelete: SetNull)
+  /// Даты опциональны для DRAFT/WEB_INQUIRY (клиент может ещё не выбрать).
+  fromDate       DateTime?
+  toDate         DateTime?
+  daysCount      Int?
+  totalAmount    Int              @default(0)
+  deposit        Int              @default(0)
+  deliveryMethod DeliveryMethod   @default(PICKUP)
+  address        String?
+  contactPhone   String
+  contactEmail   String?
+  notes          String?
+  lines          OrderLine[]
+  statusLog      OrderStatusLog[]
+  payments       Payment[]
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+
+  @@index([status])
+  @@index([source])
+  @@index([fromDate, toDate])
+  @@index([clientId])
+  @@map("orders")
+}
+
+model OrderLine {
+  id              Int            @id @default(autoincrement())
+  orderId         Int
+  order           Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  equipmentId     Int
+  /// Restrict — нельзя удалить каталожную карточку, если она уже стоит в позициях
+  /// заказов (даже завершённых). Сначала архивировать через isActive=false.
+  equipment       Equipment      @relation(fields: [equipmentId], references: [id], onDelete: Restrict)
+  /// Назначенная физическая единица (опц. — может быть назначена позже через assignUnit).
+  warehouseItemId Int?
+  /// SetNull — если единицу инвентаря удалили (списали), позиция заказа остаётся,
+  /// просто без привязки. История цен и сумм не теряется.
+  warehouseItem   WarehouseItem? @relation(fields: [warehouseItemId], references: [id], onDelete: SetNull)
+  qty             Int
+  days            Int
+  unitPriceNet    Int
+  sumAmount       Int
+  unitTag         String?
+  returnedAt      DateTime?
+  /// Снепшот цены на момент создания: ранг тира и его границы.
+  pricingTierRank    Int?
+  pricingTierMinDays Int?
+  pricingTierMaxDays Int?
+  /// Снепшот залога единицы каталога на момент создания.
+  catalogItemDeposit Int?
+  snapshotAt         DateTime?  @default(now())
+  reservations    Reservation[]
+  extensions      RentalExtension[]
+
+  @@index([orderId])
+  @@index([equipmentId])
+  @@index([warehouseItemId])
+  @@map("order_lines")
+}
+
+model OrderStatusLog {
+  id          Int          @id @default(autoincrement())
+  orderId     Int
+  order       Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  fromStatus  OrderStatus?
+  toStatus    OrderStatus
+  changedById Int?
+  changedBy   User?        @relation(fields: [changedById], references: [id])
+  changedAt   DateTime     @default(now())
+  note        String?
+
+  @@index([orderId])
+  @@map("order_status_log")
+}
+
+// =====================
+// Платежи (офлайн-учёт)
+// =====================
+// Платформа не принимает онлайн-оплат. Менеджер фиксирует факт получения денег
+// от клиента вручную: метод (наличные/карта/перевод), сумма, дата, комментарий.
+// Сумма платежей сравнивается с totalAmount + deposit заказа.
+
+enum PaymentMethod {
+  CASH
+  CARD
+  TRANSFER
+  OTHER
+}
+
+enum PaymentKind {
+  /// Оплата основной части заказа (аренды).
+  CHARGE
+  /// Внесение залога.
+  DEPOSIT
+  /// Возврат денег клиенту (отмена / возврат залога / переплата).
+  REFUND
+}
+
+model Payment {
+  id          Int           @id @default(autoincrement())
+  orderId     Int
+  order       Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// Сумма в рублях. Положительная для CHARGE/DEPOSIT, положительная и для REFUND
+  /// (отдельным kind).
+  amount      Int
+  method      PaymentMethod
+  kind        PaymentKind   @default(CHARGE)
+  /// Когда фактически получены / возвращены деньги.
+  paidAt      DateTime      @default(now())
+  /// Свободный комментарий менеджера: «остаток к оплате», «частично за повреждение» и т.п.
+  note        String?
+  /// Кто зафиксировал платёж.
+  createdById Int?
+  createdBy   User?         @relation(fields: [createdById], references: [id])
+  createdAt   DateTime      @default(now())
+
+  @@index([orderId])
+  @@index([paidAt])
+  @@map("payments")
+}
+
+// =====================
+// Резервы склада: единицы заняты на временное окно
+// =====================
+
+model Reservation {
+  id              Int               @id @default(autoincrement())
+  orderLineId     Int
+  orderLine       OrderLine         @relation(fields: [orderLineId], references: [id], onDelete: Cascade)
+  warehouseItemId Int
+  /// Restrict — нельзя удалить единицу инвентаря, если на ней висят активные резервы.
+  /// Это совпадает с проверкой `assertNoActiveReservations` на уровне сервиса.
+  warehouseItem   WarehouseItem     @relation(fields: [warehouseItemId], references: [id], onDelete: Restrict)
+  fromDate        DateTime
+  toDate          DateTime
+  status          ReservationStatus @default(PLANNED)
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  @@index([warehouseItemId, fromDate, toDate])
+  @@index([orderLineId])
+  @@index([status])
+  @@map("reservations")
+}
+
+// =====================
+// Продления аренды
+// =====================
+
+model RentalExtension {
+  id            Int       @id @default(autoincrement())
+  orderLineId   Int
+  orderLine     OrderLine @relation(fields: [orderLineId], references: [id], onDelete: Cascade)
+  oldToDate     DateTime
+  newToDate     DateTime
+  addedDays     Int
+  addedAmount   Int
+  createdById   Int?
+  createdBy     User?     @relation(fields: [createdById], references: [id])
+  createdAt     DateTime  @default(now())
+
+  @@index([orderLineId])
+  @@map("rental_extensions")
+}
+
+// =====================
+// Настройки организации (singleton: id всегда = 1)
+// =====================
+// Хранит все настраиваемые админом параметры — расписание cron-задач,
+// шаблоны уведомлений и т.п. Изменения через /admin/settings/notifications.
+
+model OrgSettings {
+  id Int @id @default(1)
+
+  // ----- Cron «проверка просрочек» -----
+  /// Включена ли автопроверка просроченных заказов.
+  overdueCheckEnabled       Boolean @default(true)
+  /// Период проверки в минутах (1..60). По умолчанию 10.
+  overdueCheckEveryMinutes  Int     @default(10)
+
+  // ----- Cron «утренняя сводка менеджерам» -----
+  dailyBriefEnabled Boolean @default(true)
+  /// Час 0..23 (по timezone организации).
+  dailyBriefHour    Int     @default(8)
+  dailyBriefMinute  Int     @default(0)
+
+  // ----- Cron «напоминание клиенту о возврате» -----
+  returnReminderEnabled    Boolean @default(true)
+  returnReminderHour       Int     @default(9)
+  returnReminderMinute     Int     @default(0)
+  /// За сколько дней до даты возврата шлём напоминание (1 = за день, 0 = в день).
+  returnReminderDaysBefore Int     @default(1)
+
+  // ----- Cron «автоотмена WEB_INQUIRY-черновиков» -----
+  inquiryExpireEnabled   Boolean @default(true)
+  inquiryExpireHour      Int     @default(3)
+  inquiryExpireMinute    Int     @default(0)
+  /// Через сколько дней после createdAt инквайри автоматически отменяется.
+  inquiryExpireAfterDays Int     @default(30)
+
+  /// Часовой пояс для всех cron-задач (IANA-формат). По умолчанию Europe/Moscow.
+  timezone String @default("Europe/Moscow")
+
+  // ----- Реквизиты организации (для витрины и подписи писем) -----
+  /// Полное название организации. Используется в подписи писем и в шапке
+  /// договоров (когда они появятся). Пусто = используется fallback «RentHub».
+  /// Подставляется в шаблоны как {{orgName}}.
+  orgName       String @default("")
+  /// Краткое название (для заголовка вкладки витрины и шапки админки).
+  /// Если пусто — используется orgName.
+  orgShortName  String @default("")
+  /// Контактный телефон, который видит клиент на витрине и в письмах.
+  orgPhone      String @default("")
+  /// Контактный email (страница «Контакты», подпись писем).
+  orgEmail      String @default("")
+  /// Адрес офиса/пункта выдачи. Многострочный.
+  orgAddress    String @default("")
+  /// Часы работы в свободной форме («Пн–Пт 9:00–19:00, Сб 10:00–17:00»).
+  orgHours      String @default("")
+  /// Путь к загруженному логотипу относительно /uploads (например, «logos/abc.png»).
+  /// Null = используется встроенный SVG-логотип по умолчанию.
+  logoPath      String?
+
+  // ----- Публичная информация: Условия аренды -----
+  /// Заголовок страницы «Условия аренды» (/rental-terms).
+  /// Редактируется админом через «Настройки → Публичная информация».
+  rentalTermsTitle   String @default("Условия аренды")
+  /// HTML-контент страницы «Условия аренды» (/rental-terms).
+  /// Редактируется админом через «Настройки → Публичная информация».
+  /// Пусто = показывается заглушка «Информация отсутствует».
+  rentalTermsContent String @default("")
+
+  // ----- Отправитель писем -----
+  /// Имя отправителя в письмах (видит клиент в инбоксе как «От кого»).
+  /// Пусто = используется SMTP_FROM из .env как есть.
+  senderName  String @default("")
+  /// Email-адрес отправителя. Должен быть разрешён SMTP-сервером (обычно совпадает с SMTP_USER).
+  /// Пусто = используется SMTP_FROM из .env.
+  senderEmail String @default("")
+  /// Email-адреса менеджеров через запятую. Сюда летят все STAFF-уведомления.
+  /// Пусто = используется SMTP_STAFF_EMAIL из .env.
+  staffEmails String @default("")
+
+  // ----- SMTP-транспорт -----
+  /// Адрес SMTP-сервера. Пусто = используется SMTP_HOST из .env.
+  smtpHost   String  @default("")
+  /// Порт SMTP. 0 = используется SMTP_PORT из .env (или 587).
+  smtpPort   Int     @default(0)
+  /// Логин SMTP. Пусто = используется SMTP_USER из .env.
+  smtpUser   String  @default("")
+  /// Пароль SMTP (хранится в БД как есть; единственный экземпляр платформы).
+  /// Пусто = используется SMTP_PASS из .env.
+  smtpPass   String  @default("")
+  /// Использовать TLS. Дефолт true — свежая БД сразу предлагает рекомендуемый
+  /// TLS, без необходимости щёлкать тумблер при первом открытии настроек.
+  /// Юзер свободен переключить на STARTTLS вручную, и его выбор сохранится.
+  smtpSecure Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("org_settings")
+}
+
+// =====================
+// Шаблоны email-уведомлений (редактируются админом)
+// =====================
+// По одному шаблону на каждый тип события. Подстановка плейсхолдеров {{var}}.
+// На фронте редактируется WYSIWYG-редактором, можно отключить целиком (enabled=false).
+
+model EmailTemplate {
+  id        Int      @id @default(autoincrement())
+  /// Канонический тип события: см. NotificationEvent.type на бэке.
+  eventType String   @unique
+  /// Человекочитаемое название (для админки).
+  label     String
+  /// Включён ли шаблон. Если false — письма этого типа не уходят.
+  enabled   Boolean  @default(true)
+  /// Тема письма. Поддерживает {{var}}.
+  subject   String
+  /// Тело письма (HTML). Поддерживает {{var}}.
+  bodyHtml  String
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@map("email_templates")
+}
+
+// =====================
+// Юридические документы (редактируются админом)
+// =====================
+// Один из трёх типовых документов: terms / personal-data / privacy.
+// Контент — HTML (генерируется WYSIWYG-редактором на фронте).
+
+model LegalDocument {
+  id        Int      @id @default(autoincrement())
+  slug      String   @unique // 'terms' | 'personal-data' | 'privacy'
+  title     String
+  content   String // HTML
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+
+  @@map("legal_documents")
+}
+
+// =====================
+// Обслуживание оборудования
+// =====================
+
+model MaintenanceLog {
+  id              Int           @id @default(autoincrement())
+  warehouseItemId Int
+  warehouseItem   WarehouseItem @relation(fields: [warehouseItemId], references: [id])
+  startedAt       DateTime
+  endedAt         DateTime?
+  reason          String
+  cost            Int?
+
+  @@index([warehouseItemId])
+  @@map("maintenance_log")
+}

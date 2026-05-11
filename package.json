@@ -1,0 +1,60 @@
+{
+  "name": "renthub",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Платформа для онлайн-аренды оборудования",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AkonitVerse/RentHub.git"
+  },
+  "homepage": "https://github.com/AkonitVerse/RentHub#readme",
+  "bugs": {
+    "url": "https://github.com/AkonitVerse/RentHub/issues"
+  },
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently --names \"API,WEB\" --prefix-colors \"blue.bold,magenta.bold\" --kill-others-on-fail \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:all": "npm run dev:db && npm run dev",
+    "dev:db": "docker compose -f docker/compose.dev.yml up -d",
+    "dev:db:stop": "docker compose -f docker/compose.dev.yml down",
+    "dev:db:logs": "docker compose -f docker/compose.dev.yml logs -f",
+    "dev:api": "npm run start:dev --workspace=@renthub/api",
+    "dev:web": "npm run dev --workspace=@renthub/web",
+    "db:migrate": "npm run db:migrate --workspace=@renthub/api",
+    "db:migrate:deploy": "npm run db:migrate:deploy --workspace=@renthub/api",
+    "db:seed": "npm run db:seed --workspace=@renthub/api",
+    "db:seed:demo": "npm run db:seed:demo --workspace=@renthub/api",
+    "db:studio": "npm run db:studio --workspace=@renthub/api",
+    "db:reset": "npm run db:reset --workspace=@renthub/api",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "test:e2e": "npm run test:e2e --workspace=@renthub/web",
+    "format": "prettier --write \"**/*.{ts,tsx,js,mjs,json,md,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,json,md,yml,yaml}\"",
+    "prepare": "husky"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.11",
+    "prettier": "^3.4.2"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "prettier --write"
+    ],
+    "*.{js,mjs,json,md,yml,yaml}": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "bcrypt": "^6.0.0"
+  }
+}
