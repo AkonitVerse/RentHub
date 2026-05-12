@@ -84,7 +84,17 @@ test.describe('Auth', () => {
     await expect(page).toHaveURL(/\/login/);
   });
 
-  test('forgot password page loads', async ({ page }) => {
+  test('forgot password page loads', async ({ page, request }) => {
+    // Check if email verification is enabled
+    const apiPort = process.env.E2E_API_PORT ?? '3001';
+    const orgContactRes = await request.get(`http://localhost:${apiPort}/api/v1/org-settings/contact`);
+    const orgContact = await orgContactRes.json();
+    
+    // If email verification is disabled, the page will redirect to /login
+    if (orgContact.emailVerificationEnabled === false) {
+      test.skip();
+    }
+    
     await page.goto('/forgot-password');
     await expect(page).toHaveURL(/\/forgot-password/);
     await expect(page.locator('form').first()).toBeVisible();

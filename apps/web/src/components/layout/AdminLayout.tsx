@@ -200,9 +200,9 @@ export function AdminLayout() {
             </div>
           </div>
         </header>
-        <div className="p-4 sm:p-6 lg:p-8">
+        <main className="p-4 sm:p-6 lg:p-8">
           <Outlet />
-        </div>
+        </main>
       </div>
     </div>
   );
